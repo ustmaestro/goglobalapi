@@ -2,280 +2,548 @@
 
 namespace ustmaestro\goglobalapi;
 
+use Exception;
+use InvalidArgumentException;
+use SoapFault;
 use ustmaestro\goglobalapi\lib\GGHelper;
-use ustmaestro\goglobalapi\lib\GGStaticTypes;
 use ustmaestro\goglobalapi\lib\GGResponseParser;
-use ustmaestro\goglobalapi\lib\GGSearchModel;
-
+use ustmaestro\goglobalapi\lib\GGStaticTypes;
+use ustmaestro\goglobalapi\models\GGSearchModel;
 
 /**
  * GoGlobal Service Class
  */
-class GGService {
+class GGService
+{
+    const GG_SERVICE_URL = "https://directbooking.xml.goglobal.travel./xmlwebservice.asmx";
+    const GG_API_VERSION = "2.3";
+    const GG_API_RESPONSE_FORMAT_JSON = "JSON";
+    const GG_API_RESPONSE_FORMAT_XML = "XML";
 
-    const GGServiceUrl = "http://xml.qa.goglobal.travel/XMLWebService.asmx";
+    /**
+     * @var string|null
+     */
+    private ?string $agency;
 
-    protected $_agency;
-    protected $_user;
-    protected $_password;
-    protected $_url;
-    protected $_wsdl;
-    protected $_maxResult = 10000;
-    protected $_timeout = 60;
+    /**
+     * @var string|null
+     */
+    private ?string $user;
 
-    public $_lastXml = "";
+    /**
+     * @var string|null
+     */
+    private ?string $password;
+
+    /**
+     * @var string|null
+     */
+    private ?string $url;
+
+    /**
+     * @var GGSoapClient
+     */
+    private GGSoapClient $soapClient;
+
+    /**
+     * @var int
+     */
+    private int $maxResults = 10000;
+
+    /**
+     * @var int
+     */
+    private int $timeout = 60;
+
+    /**
+     * @var string
+     */
+    private string $responseFormat = self::GG_API_RESPONSE_FORMAT_XML;
+
+    /**
+     * @var bool
+     */
+    private bool $parseResult = false;
+
+    /**
+     * @var string|null
+     */
+    private ?string $lastXml;
 
     /**
      * GoGlobal Service constructor
+     *
+     * @param array $config
+     * @throws SoapFault
      */
-    public function __construct( $config = array()) {
-        foreach(array('agency', 'user', 'password') as $ck) {
-            if(!array_key_exists($ck, $config) || strlen($config[$ck]) < 1) {
-                throw new \InvalidArgumentException("Missing config value: [".$ck."]");
+    public function __construct(array $config = [])
+    {
+        foreach (['agency', 'user', 'password'] as $checkedSetting) {
+            if (!array_key_exists($checkedSetting, $config) || strlen($config[$checkedSetting]) < 1) {
+                throw new InvalidArgumentException("Missing config value: [" . $checkedSetting . "]");
             }
         }
-        $this->_agency      = $config['agency'];
-        $this->_user        = $config['user'];
-        $this->_password    = $config['password'];
-        if(array_key_exists('url', $config)) {
-            $this->_url     = $config['url'];
-        } else {
-            $this->_url     = self::GGServiceUrl;
-        }
-        $this->_wsdl        = new \SoapClient($this->_url."?WSDL");
+        $this->agency = $config['agency'];
+        $this->user = $config['user'];
+        $this->password = $config['password'];
+        $this->url = $config['url'] ?? self::GG_SERVICE_URL;
+        $this->soapClient = new GGSoapClient($this->url . "?WSDL");
+    }
+
+    /**
+     * Getting GoGlobal API Version
+     * @return string
+     */
+    public function getApiVersion(): string
+    {
+        return self::GG_API_VERSION;
     }
 
     /**
      * Setting GoGlobal request max results
+     * @return $this
      */
-    public function setMaxResults($max) {
-        $this->_maxResult = intval($max);
+    public function setMaxResults(int $maxResults): self
+    {
+        $this->maxResults = $maxResults;
+        return $this;
     }
 
     /**
      * Getting GoGlobal request max results
+     * @return int
      */
-    public function getMaxResults() {
-        return $this->_maxResult;
+    public function getMaxResults(): int
+    {
+        return $this->maxResults;
     }
 
     /**
      * Setting GoGlobal request timeout
+     * @param int $timeout
+     * @return $this
      */
-    public function setTimeout($timeout) {
-        $this->_timeout = intval($timeout);
+    public function setTimeout(int $timeout): self
+    {
+        $this->timeout = $timeout;
+        return $this;
     }
 
     /**
      * Getting GoGlobal request timeout
+     * @return int
      */
-    public function getTimeout() {
-        return $this->_timeout;
+    public function getTimeout(): int
+    {
+        return $this->timeout;
+    }
+
+    /**
+     * Getting GoGlobal service response format
+     * @return string
+     */
+    public function getResponseFormat(): string
+    {
+        return $this->responseFormat;
+    }
+
+    /**
+     * Setting GoGlobal service response format
+     * @param string $responseFormat
+     * @return $this
+     * @throws InvalidArgumentException
+     */
+    public function setResponseFormat(string $responseFormat): self
+    {
+        if (!in_array($responseFormat, [self::GG_API_RESPONSE_FORMAT_XML, self::GG_API_RESPONSE_FORMAT_JSON])) {
+            throw new InvalidArgumentException("Invalid config, response format: [" . $responseFormat . "]");
+        }
+        $this->responseFormat = $responseFormat;
+        return $this;
+    }
+
+    /**
+     * @return bool
+     */
+    public function getParseResult(): bool
+    {
+        return $this->parseResult;
+    }
+
+    /**
+     * @param bool $parseResult
+     * @return $this
+     */
+    public function setParseResult(bool $parseResult): self
+    {
+        $this->parseResult = $parseResult;
+        return $this;
+    }
+
+    /**
+     * Getting GoGlobal last request xml
+     * @return string|null
+     */
+    public function getLastXml(): ?string
+    {
+        return $this->lastXml;
     }
 
     /**
      * Make GoGlobal request header
+     * @param int $requestType
+     * @return string
      */
-    protected function _makeXmlHeader($requestType){
-        $xml  = GGHelper::WrapTag('Agency', $this->_agency);
-        $xml .= GGHelper::WrapTag('User', $this->_user);
-        $xml .= GGHelper::WrapTag('Password', $this->_password);
-        $xml .= GGHelper::WrapTag('Operation', GGStaticTypes::$RequestType[$requestType]);
-        $xml .= GGHelper::WrapTag('OperationType', 'Request');
-        $xml  = GGHelper::WrapTag('Header', $xml);
-        return $xml;
+    protected function _makeXmlHeader(int $requestType): string
+    {
+        $xml = GGHelper::wrapTag("Agency", $this->agency);
+        $xml .= GGHelper::wrapTag("User", $this->user);
+        $xml .= GGHelper::wrapTag("Password", $this->password);
+        $xml .= GGHelper::wrapTag("Operation", GGStaticTypes::REQUEST_TYPE[$requestType]);
+        $xml .= GGHelper::wrapTag("OperationType", "Request");
+        return GGHelper::wrapTag("Header", $xml);
     }
 
     /**
      * Sending GoGlobal request
+     * @param int $requestType
+     * @param string $xmlRequest
+     * @return string
      */
-    protected function _sendRequest($requestType, $xmlRequest = "") {
-        $xml = GGHelper::WrapTag('Root', $this->_makeXmlHeader($requestType) . GGHelper::WrapTag('Main', $xmlRequest));
-        $resp = $this->_wsdl->MakeRequest([
-            'requestType' => $requestType,
-            'xmlRequest' => $xml,
+    protected function _sendRequest(int $requestType, string $xmlRequest = ""): string
+    {
+        $xml = $this->_makeXmlHeader($requestType);
+        $xml .= GGHelper::wrapTag("Main", $xmlRequest, [
+            "Version" => $this->getApiVersion(),
+            "ResponseFormat" => $this->getResponseFormat()
         ]);
-        $this->_lastXml = $xml;
-        $requestResult = $resp->MakeRequestResult;
-        return $requestResult;
+        $xml = GGHelper::wrapTag("Root", $xml);
+
+        $this->lastXml = $xml;
+        $resp = $this->soapClient->MakeRequest([
+            "requestType" => $requestType,
+            "xmlRequest" => $xml,
+        ]);        
+        return $resp->MakeRequestResult;
     }
 
     /**
      * Search hotels without geocodes
+     * @param GGSearchModel $model
+     * @return array|string
+     * @throws Exception
      */
-    public function searchHotels(GGSearchModel $model) {
+    public function searchHotels(GGSearchModel $model): array|string
+    {
         $requestType = 1;
         $xml = $model->toXml();
-        return GGResponseParser::parseHotelsList($this->_sendRequest($requestType, $xml));
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseHotelsList($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Search hotels with geocodes
+     * @param GGSearchModel $model
+     * @return array|string
+     * @throws Exception
      */
-    public function searchHotelsGeo(GGSearchModel $model) {
+    public function searchHotelsGeo(GGSearchModel $model): array|string
+    {
         $requestType = 11;
         $xml = $model->toXml();
-        return GGResponseParser::parseHotelsList($this->_sendRequest($requestType, $xml));
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseHotelsList($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Getting hotel information without geocodes
+     * @param string $hotelCode
+     * @return array|string
+     * @throws Exception
      */
-    public function getHotelInfo($hotelCode) {
+    public function getHotelInfo(string $hotelCode): array|string
+    {
         $requestType = 6;
-        $xml = GGHelper::WrapTag('HotelSearchCode', $hotelCode);
-        return GGResponseParser::parseHotelInfo($this->_sendRequest($requestType, $xml));
+        $xml = GGHelper::wrapTag("HotelSearchCode", $hotelCode);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseHotelInfo($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Getting hotel information with geocodes
+     * @param string $hotelCode
+     * @return array|string
+     * @throws Exception
      */
-    public function getHotelInfoGeo($hotelCode) {
+    public function getHotelInfoGeo(string $hotelCode): array|string
+    {
         $requestType = 61;
-        $xml = GGHelper::WrapTag('HotelSearchCode', $hotelCode);
-        return GGResponseParser::parseHotelInfo($this->_sendRequest($requestType, $xml));
+        $xml = GGHelper::wrapTag("HotelSearchCode", $hotelCode);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseHotelInfo($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Insert new booking
+     * @param string $agentReference
+     * @param string $hotelCode
+     * @param string $hotelCheckIn
+     * @param string $hotelNights
+     * @param string $hasAlternative
+     * @param string $leaderId
+     * @param array $bookingRooms
+     * @return array|string
+     * @throws Exception
      */
-    public function insertBooking($agentReference, $hotelCode, $hotelCheckIn, $hotelNights, $hasAlternative, $leaderId, $bookingRooms) {
+    public function insertBooking(
+        string $agentReference, 
+        string $hotelCode, 
+        string $hotelCheckIn, 
+        string $hotelNights, 
+        string $hasAlternative, 
+        string $leaderId, 
+        array $bookingRooms
+    ): array|string {
         $requestType = 2;
-        $xml  = "";
-        $xml .= GGHelper::WrapTag('AgentReference', $agentReference);
-        $xml .= GGHelper::WrapTag('HotelSearchCode', $hotelCode);
-        $xml .= GGHelper::WrapTag('ArrivalDate', $hotelCheckIn);
-        $xml .= GGHelper::WrapTag('Nights', $hotelNights);
-        $xml .= GGHelper::WrapTag('NoAlternativeHotel', $hasAlternative);
-        $xml .= GGHelper::WrapTag('Leader', '', ['LeaderPersonID' => $leaderId]);
+        $xml = GGHelper::wrapTag("AgentReference", $agentReference);
+        $xml .= GGHelper::wrapTag("HotelSearchCode", $hotelCode);
+        $xml .= GGHelper::wrapTag("ArrivalDate", $hotelCheckIn);
+        $xml .= GGHelper::wrapTag("Nights", $hotelNights);
+        $xml .= GGHelper::wrapTag("NoAlternativeHotel", $hasAlternative);
+        $xml .= GGHelper::wrapTag("Leader", "", ["LeaderPersonID" => $leaderId]);
         $roomTypeXml = "";
-        foreach($bookingRooms as $roomType => $rooms){
+        foreach ($bookingRooms as $roomType => $rooms) {
             $roomXml = "";
-            foreach($rooms as $roomId => $room){
+            foreach ($rooms as $roomId => $room) {
                 $personXml = "";
-                foreach($room as $personId => $person){
-                    if($person['type'] == "adult")
-                        $personXml .= GGHelper::WrapTag('PersonName', $person['name'], ['PersonID' => $personId]);
-                    else if($person['type'] == "child")
-                        $personXml .= GGHelper::WrapTag('ExtraBed', $person['name'], ['PersonID' => $personId, 'ChildAge' => $person['age']]);
+                foreach ($room as $personId => $person) {
+                    if ($person["type"] == "adult") {
+                        $personXml .= GGHelper::wrapTag("PersonName", $person["name"], [
+                            "PersonID" => $personId
+                        ]);
+                    } else if ($person["type"] == "child") {
+                        $personXml .= GGHelper::wrapTag("ExtraBed", $person["name"], [
+                            "PersonID" => $personId,
+                            "ChildAge" => $person["age"]
+                        ]);
+                    }
                 }
-                $roomXml .= GGHelper::WrapTag('Room', $personXml, ['RoomID' => $roomId]);
+                $roomXml .= GGHelper::wrapTag("Room", $personXml, ["RoomID" => $roomId]);
             }
-            $roomTypeXml .= GGHelper::WrapTag('RoomType', $roomXml, ['Type' => $roomType]);
+            $roomTypeXml .= GGHelper::wrapTag("RoomType", $roomXml, ["Type" => $roomType]);
         }
-        $xml .= GGHelper::WrapTag('Rooms', $roomTypeXml);
-        return GGResponseParser::parseBookingInsert($this->_sendRequest($requestType, $xml));
+        $xml .= GGHelper::wrapTag("Rooms", $roomTypeXml);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingInsert($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Cancel booking
+     * @param string $bookingId
+     * @return array|string
+     * @throws Exception
      */
-    public function cancelBooking($bookingId) {
+    public function cancelBooking(string $bookingId): array|string
+    {
         $requestType = 3;
-        $xml  = GGHelper::WrapTag('GoBookingCode', $bookingId);
-        return GGResponseParser::parseBookingCancel($this->_sendRequest($requestType, $xml));
+        $xml = GGHelper::wrapTag('GoBookingCode', $bookingId);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingCancel($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Search booking
+     * @param string $bookingId
+     * @return array|string
+     * @throws Exception
      */
-    public function searchBooking($bookingId) {
+    public function searchBooking(string $bookingId): array|string
+    {
         $requestType = 4;
-        $xml  = GGHelper::WrapTag('GoBookingCode', $bookingId);
-        return GGResponseParser::parseBookingSearch($this->_sendRequest($requestType, $xml));
+        $xml = GGHelper::wrapTag('GoBookingCode', $bookingId);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingSearch($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Search booking advanced
+     * @param string $dateFrom
+     * @param string $dateTo
+     * @param string $paxName
+     * @param string $cityCode
+     * @param string $nights
+     * @param string $hotelName
+     * @return array|string
+     * @throws Exception
      */
-    public function searchBookingAdvanced($dateFrom = "", $dateTo = "", $paxName = "", $cityCode = "", $nights = "", $hotelName = "") {
+    public function searchBookingAdvanced(
+        string $dateFrom = "",
+        string $dateTo = "",
+        string $paxName = "",
+        string $cityCode = "",
+        string $nights = "",
+        string $hotelName = ""
+    ): array|string {
         $requestType = 10;
-        $xml  = "";
-        $xml .= (!empty($dateFrom)) ? GGHelper::WrapTag('ArrivalDateRangeFrom', $dateFrom) : "";
-        $xml .= (!empty($dateTo)) ? GGHelper::WrapTag('ArrivalDateRangeTo', $dateTo) : "";
-        $xml .= (!empty($paxName)) ? GGHelper::WrapTag('PaxName', $paxName) : "";
-        $xml .= (!empty($cityCode)) ? GGHelper::WrapTag('CityCode', $cityCode) : "";
-        $xml .= (!empty($nights)) ? GGHelper::WrapTag('Nights', $nights) : "";
-        $xml .= (!empty($hotelName)) ? GGHelper::WrapTag('HotelName', $hotelName) : "";
-        return GGResponseParser::parseBookingSearchAdv($this->_sendRequest($requestType, $xml));
+        $xml = (!empty($dateFrom)) ? GGHelper::wrapTag('ArrivalDateRangeFrom', $dateFrom) : "";
+        $xml .= (!empty($dateTo)) ? GGHelper::wrapTag('ArrivalDateRangeTo', $dateTo) : "";
+        $xml .= (!empty($paxName)) ? GGHelper::wrapTag('PaxName', $paxName) : "";
+        $xml .= (!empty($cityCode)) ? GGHelper::wrapTag('CityCode', $cityCode) : "";
+        $xml .= (!empty($nights)) ? GGHelper::wrapTag('Nights', $nights) : "";
+        $xml .= (!empty($hotelName)) ? GGHelper::wrapTag('HotelName', $hotelName) : "";
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingSearchAdv($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Check single booking status
+     * @param string $bookingId
+     * @return array|string
+     * @throws Exception
      */
-    public function checkBookingStatus($bookingId) {
+    public function checkBookingStatus(string $bookingId): array|string
+    {
         $requestType = 5;
-        $xml  = GGHelper::WrapTag('GoBookingCode', $bookingId);
-        return GGResponseParser::parseBookingCheckStatus($this->_sendRequest($requestType, $xml));
+        $xml = GGHelper::wrapTag('GoBookingCode', $bookingId);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingCheckStatus($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Check multiple booking status
+     * @param array $bookingsIds
+     * @return array|string
+     * @throws Exception
      */
-    public function checkBookingsStatus($bookingsId = []) {
+    public function checkBookingsStatuses(array $bookingsIds = []): array|string
+    {
         $requestType = 5;
         $xml = "";
-        foreach($bookingsId as $bookingId)
-            $xml  .= GGHelper::WrapTag('GoBookingCode', $bookingId);
-        return GGResponseParser::parseBookingCheckStatus($this->_sendRequest($requestType, $xml));
+        foreach ($bookingsIds as $bookingId) {
+            $xml .= GGHelper::wrapTag('GoBookingCode', $bookingId);
+        }
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingCheckStatus($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Check booking valuation
+     * @param string $hotelCode
+     * @param string $arrivalDate
+     * @return array|string
+     * @throws Exception
      */
-    public function checkBookingValuation($hotelCode, $arrivalDate) {
+    public function checkBookingValuation(string $hotelCode, string $arrivalDate): array|string
+    {
         $requestType = 9;
-        $xml  = GGHelper::WrapTag('HotelSearchCode', $hotelCode);
-        $xml .= GGHelper::WrapTag('ArrivalDate', $arrivalDate);
-        return GGResponseParser::parseBookingValuationCheck($this->_sendRequest($requestType, $xml));
+        $xml = GGHelper::wrapTag('HotelSearchCode', $hotelCode);
+        $xml .= GGHelper::wrapTag('ArrivalDate', $arrivalDate);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingValuationCheck($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Getting booking voucher
+     * @param string $bookingId
+     * @param bool $emergencyPhone
+     * @return array|string
+     * @throws Exception
      */
-    public function getBookingVoucher($bookingId, $emergencyPhone = true) {
+    public function getBookingVoucher(string $bookingId, bool $emergencyPhone = true): array|string
+    {
         $requestType = 8;
-        $xml  = GGHelper::WrapTag('GoBookingCode', $bookingId);
-        $xml .= GGHelper::WrapTag('GetEmergencyPhone', $emergencyPhone);
-        return GGResponseParser::parseBookingVoucher($this->_sendRequest($requestType, $xml));
+        $xml = GGHelper::wrapTag('GoBookingCode', $bookingId);
+        $xml .= GGHelper::wrapTag('GetEmergencyPhone', $emergencyPhone);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingVoucher($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Getting booking voucher
+     * @param string $bookingId
+     * @return array|string
+     * @throws Exception
      */
-    public function getPiggyPoints($bookingId, $emergencyPhone = true) {
+    public function getPiggyPoints(string $bookingId): array|string
+    {
         $requestType = 12;
-        return GGResponseParser::parsePiggyPoints($this->_sendRequest($requestType, ''));
+        $xml = GGHelper::wrapTag('GoBookingCode', $bookingId);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parsePiggyPoints($this->_sendRequest($requestType, $xml));
     }
-
 
     /**
      * Getting price breakdown
+     * @param string $bookingId
+     * @param string $returnUrl
+     * @return array|string
+     * @throws Exception
      */
-    public function getPaymentService($bookingId, $returnUrl) {
+    public function getPaymentService(string $bookingId, string $returnUrl): array|string
+    {
         $requestType = 13;
-        $xml = GGHelper::WrapTag('GoBookingCode', $bookingId);
-        $xml = GGHelper::WrapTag('ReturnUrl', $returnUrl);
-        return GGResponseParser::parsePaymentService($this->_sendRequest($requestType, $xml));
+        $xml = GGHelper::wrapTag('GoBookingCode', $bookingId);
+        $xml .= GGHelper::wrapTag('ReturnUrl', $returnUrl);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parsePaymentService($this->_sendRequest($requestType, $xml));
     }
 
     /**
      * Getting price breakdown
+     * @param string $hotelCode
+     * @return array|string
+     * @throws Exception
      */
-    public function getPriceBreakdown($hotelCode) {
+    public function getPriceBreakdown(string $hotelCode): array|string
+    {
         $requestType = 14;
-        $xml = GGHelper::WrapTag('HotelSearchCode', $hotelCode);
-        return GGResponseParser::parsePriceBreakdown($this->_sendRequest($requestType, $xml));
+        $xml = GGHelper::wrapTag('HotelSearchCode', $hotelCode);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parsePriceBreakdown($this->_sendRequest($requestType, $xml));
     }
 
     /**
-     * Getting price breakdown
+     * Getting booking amendment info
+     * @param string $bookingId
+     * @return array|string
+     * @throws Exception
      */
-    public function getBookingAmendementInfo($bookingId) {
-        $requestType = 14;
-        $xml = GGHelper::WrapTag('GoBookingCode', $bookingId);
-        return GGResponseParser::parseBookingAmendementInfo($this->_sendRequest($requestType, $xml));
+    public function getBookingAmendmentInfo(string $bookingId): array|string
+    {
+        $requestType = 15;
+        $xml = GGHelper::wrapTag('GoBookingCode', $bookingId);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingAmendmentInfo($this->_sendRequest($requestType, $xml));
     }
 
+    /**
+     * Booking amendment request
+     * @param string $bookingId
+     * @return array|string
+     * @throws Exception
+     */
+    public function bookingAmendmentRequest(string $bookingId): array|string
+    {
+        $requestType = 16;
+        $xml = GGHelper::wrapTag('GoBookingCode', $bookingId);
+        return (($this->getResponseFormat() == self::GG_API_RESPONSE_FORMAT_JSON) || !$this->getParseResult())
+            ? $this->_sendRequest($requestType, $xml)
+            : GGResponseParser::parseBookingAmendmentInfo($this->_sendRequest($requestType, $xml));
+    }
 }
-

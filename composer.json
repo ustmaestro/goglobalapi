@@ -9,7 +9,11 @@
             "email": "ustmaestro@gmail.com"
         }
     ],
-    "require": {},    
+    "require": {
+        "php": ">=8.0",
+        "ext-simplexml": "*",
+        "ext-soap": "*"
+    },
     "autoload": {
         "psr-4": {
             "ustmaestro\\goglobalapi\\": "src"
